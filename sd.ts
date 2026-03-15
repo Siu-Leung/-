@@ -14,8 +14,8 @@ const targetMap = new Map<number, { username: string; expireAt: number | null; t
 // 默认火力 API 池
 const apiList: string[] = [
   'https://yyapi.a1aa.cn/api.php?level=max',
-  'https://api.shadiao.pro/chp',
-  'https://v1.alapi.cn/api/soul'
+  'https://yyapi.a1aa.cn/api.php?level=max',
+  'https://yyapi.a1aa.cn/api.php?level=max'
 ];
 
 /**
