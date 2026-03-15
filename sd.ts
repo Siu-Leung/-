@@ -1,71 +1,74 @@
-import { Context, NarrowedContext } from "telegraf";
-import { Message, Update } from "telegraf/types";
-import axios from "axios";
+import { Context } from 'telegraf';
+import axios from 'axios';
 
 /**
- * 插件信息
+ * 插件基础信息
  */
-export const name = "极限索敌 (SD-Ultra)";
-export const command = "sd";
-export const description = "多目标对线、自定义 API、定时炸弹。";
-export const usage = 
-  "\n• .sd on [时间] - 开启(需回复)\n• .sd off - 停止对该用户索敌(需回复)\n• .sd list - 查看名单\n• .sd api [url] - 添加新弹药库";
+export const name = '极限索敌';
+export const command = 'sd';
+export const help = `跟我对线？
+用法：
+• .sd on [时间] - 开启索敌 (需回复目标)
+• .sd off - 停止索敌 (需回复目标)
+• .sd list - 查看当前名单
+• .sd api [url] - 添加自定义API`;
 
-// 目标库：Map<userId, { username: string, expireAt: number | null, timer?: NodeJS.Timeout }>
+// 存储索敌名单
 const targetMap = new Map<number, { username: string; expireAt: number | null; timer?: NodeJS.Timeout }>();
 
-// 弹药库 (内置多条高火力线路)
+// 默认高火力 API 池
 let apiList: string[] = [
-  "https://yyapi.a1aa.cn/api.php?level=max",      // 默认最强线路
-  "https://api.shadiao.pro/chp",                // 阴阳怪气专用
-  "https://v1.alapi.cn/api/soul",               // 毒舌鸡汤
-  "https://api.uomg.com/api/rand.qinghua"       // 这种时候发情话也是一种嘲讽
+  'https://yyapi.a1aa.cn/api.php?level=max',
+  'https://api.shadiao.pro/chp',
+  'https://v1.alapi.cn/api/soul'
 ];
 
 /**
- * 核心：火力输出 (随机从 API 获取内容)
+ * 获取嘴臭文本
  */
-async function getFirepower(): Promise<string> {
+async function getInsult(): Promise<string> {
   const url = apiList[Math.floor(Math.random() * apiList.length)];
   try {
     const res = await axios.get(url, { timeout: 3000 });
     const data = res.data;
-    // 兼容多种 API 返回格式
-    const content = (typeof data === 'string' ? data : (data.data?.text || data.text || data.content));
-    return content ? content.trim() : "（子弹卡壳了...）";
+    const text = typeof data === 'string' ? data : (data.data?.text || data.text || data.content);
+    return text ? text.trim() : '词库暂时断货了。';
   } catch {
-    return "算你命大，我的网络抽风了。";
+    return '网络延迟，放你一马。';
   }
 }
 
 /**
- * 主指令逻辑
+ * .sd 命令处理主入口 (TeleBox 规范使用 execute)
  */
-export async function handler(ctx: NarrowedContext<Context, Update.MessageUpdate>) {
-  const message = ctx.message as Message.TextMessage;
-  const args = message.text.split(/\s+/);
+export const execute = async (ctx: Context) => {
+  // @ts-ignore
+  const text = ctx.message?.text || '';
+  const args = text.split(/\s+/);
   const subCommand = args[1]?.toLowerCase();
 
+  // @ts-ignore
+  const replyTo = ctx.message?.reply_to_message;
+
   switch (subCommand) {
-    case "on": {
-      // 开启逻辑：必须回复某人
-      if (!message.reply_to_message) return ctx.reply("❌ 错误：请回复你想对线的那个人！");
-      const target = message.reply_to_message.from;
-      if (!target || target.is_bot) return ctx.reply("❌ 无法对机器人或未知用户开火。");
+    case 'on': {
+      if (!replyTo) return ctx.reply('❌ 请回复一个你想索敌的用户！');
+      const target = replyTo.from;
+      if (!target || target.is_bot) return ctx.reply('❌ 无法索敌机器人或无效用户。');
 
       const minutes = args[2] ? parseInt(args[2]) : null;
       
-      // 如果已经锁定了该用户，先清除旧的定时器
+      // 清除旧的计时器防止重叠
       if (targetMap.has(target.id)) {
-        const oldData = targetMap.get(target.id);
-        if (oldData?.timer) clearTimeout(oldData.timer);
+        const old = targetMap.get(target.id);
+        if (old?.timer) clearTimeout(old.timer);
       }
 
       let timer: NodeJS.Timeout | undefined;
       if (minutes) {
         timer = setTimeout(() => {
           targetMap.delete(target.id);
-          ctx.reply(`⏰ 时间到，对 [${target.first_name}] 的限时轰炸已结束。`);
+          ctx.reply(`⏰ 对 [${target.first_name}] 的限时索敌已结束。`);
         }, minutes * 60 * 1000);
       }
 
@@ -75,73 +78,69 @@ export async function handler(ctx: NarrowedContext<Context, Update.MessageUpdate
         timer
       });
 
-      await ctx.reply(`🔥 锁定目标: ${target.first_name}${minutes ? ` (持续 ${minutes} 分钟)` : " (直到天荒地老)"}`);
+      await ctx.reply(`🔥 已锁定目标: ${target.first_name}${minutes ? ` (${minutes}分钟)` : ' (永久)'}`);
       break;
     }
 
-    case "off": {
-      // 停止逻辑：回复谁就停谁
-      const targetId = message.reply_to_message?.from?.id;
+    case 'off': {
+      if (!replyTo) return ctx.reply('❌ 请回复被锁定的用户以停止索敌。');
+      const targetId = replyTo.from?.id;
       if (targetId && targetMap.has(targetId)) {
         const data = targetMap.get(targetId);
         if (data?.timer) clearTimeout(data.timer);
         targetMap.delete(targetId);
-        await ctx.reply("🏳️ 已停火，放他一马。");
-      } else if (!message.reply_to_message && targetMap.size > 0) {
-        // 如果直接发 .sd off 且没回复，给出提示，或者直接清空所有？
-        await ctx.reply("⚠️ 请回复特定用户以停止索敌，或使用其他手段清空。");
+        await ctx.reply('🏳️ 已停止对该用户的索敌。');
       } else {
-        await ctx.reply("❓ 该用户并未在名单中。");
+        await ctx.reply('❓ 该用户不在索敌名单中。');
       }
       break;
     }
 
-    case "list": {
-      if (targetMap.size === 0) return ctx.reply("🕊️ 现世安稳，没有任何索敌目标。");
-      let listMsg = "📝 **当前开火名单：**\n";
-      targetMap.forEach((val, key) => {
-        const timeStr = val.expireAt ? ` [剩 ${Math.round((val.expireAt - Date.now()) / 60000)} 分]` : " [持续]";
-        listMsg += `• <code>${key}</code> | <b>${val.username}</b>${timeStr}\n`;
+    case 'list': {
+      if (targetMap.size === 0) return ctx.reply('🕊️ 当前没有正在索敌的目标。');
+      let msg = '📝 **当前索敌名单：**\n';
+      targetMap.forEach((v, k) => {
+        const rest = v.expireAt ? ` [剩${Math.round((v.expireAt - Date.now()) / 60000)}分]` : ' [持续]';
+        msg += `• <code>${k}</code> | <b>${v.username}</b>${rest}\n`;
       });
-      await ctx.replyWithHTML(listMsg);
+      await ctx.replyWithHTML(msg);
       break;
     }
 
-    case "api": {
-      const newUrl = args[2];
-      if (!newUrl?.startsWith("http")) return ctx.reply("❌ 请提供有效的 API URL。");
-      apiList.push(newUrl);
-      await ctx.reply(`✅ 弹药库已扩容！当前共有 ${apiList.length} 条线路。`);
+    case 'api': {
+      const url = args[2];
+      if (!url?.startsWith('http')) return ctx.reply('❌ 请输入有效的 API URL。');
+      apiList.push(url);
+      await ctx.reply('✅ 自定义 API 已添加。');
       break;
     }
 
     default:
-      await ctx.reply(`可用指令: ${usage}`);
+      await ctx.reply(help);
   }
-}
+};
 
 /**
- * 监听消息：实现全自动回怼
+ * 监听所有消息 (TeleBox 规范使用 onMessage)
  */
-export async function onText(ctx: NarrowedContext<Context, Update.MessageUpdate>) {
-  const message = ctx.message as Message.TextMessage;
-  const senderId = message.from?.id;
+export const onMessage = async (ctx: Context) => {
+  // @ts-ignore
+  const senderId = ctx.from?.id;
+  // @ts-ignore
+  const messageId = ctx.message?.message_id;
 
-  // 核心逻辑：只要发送者在 Map 里，就立刻反击
   if (senderId && targetMap.has(senderId)) {
-    const content = await getFirepower();
-    const targetData = targetMap.get(senderId);
+    const insult = await getInsult();
+    const data = targetMap.get(senderId);
     
-    const replyText = targetData?.username 
-      ? `@${targetData.username} <b>${content}</b>` 
-      : `<b>${content}</b>`;
+    const replyText = data?.username ? `@${data.username} <b>${insult}</b>` : `<b>${insult}</b>`;
 
     try {
       await ctx.replyWithHTML(replyText, {
-        reply_to_message_id: message.message_id
+        reply_to_message_id: messageId
       });
-    } catch (err) {
-      console.error("火力输出失败:", err);
+    } catch (e) {
+      console.error('SD Error:', e);
     }
   }
-}
+};
